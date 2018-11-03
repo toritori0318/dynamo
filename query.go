@@ -14,9 +14,11 @@ import (
 // See: http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_Query.html
 // and http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_GetItem.html
 type Query struct {
-	table    Table
-	startKey map[string]*dynamodb.AttributeValue
-	index    string
+	table      Table
+	startKey   map[string]*dynamodb.AttributeValue
+	index      string
+	indexKey   string
+	indexValue *dynamodb.AttributeValue
 
 	hashKey   string
 	hashValue *dynamodb.AttributeValue
@@ -84,6 +86,20 @@ func (table Table) Get(name string, value interface{}) *Query {
 		hashKey: name,
 	}
 	q.hashValue, q.err = marshal(value, "")
+	return q
+}
+
+// Get creates a new request to get an item.
+// indexName is the name of the global secondary index.
+// keyName is the name of the index key.
+// Value is the value of the index key.
+func (table Table) GetByIndex(indexName string, keyName string, value interface{}) *Query {
+	q := &Query{
+		table:    table,
+		index:    indexName,
+		indexKey: keyName,
+	}
+	q.indexValue, q.err = marshal(value, "")
 	return q
 }
 
@@ -456,10 +472,15 @@ func (q *Query) canGetItem() bool {
 func (q *Query) queryInput() *dynamodb.QueryInput {
 	req := &dynamodb.QueryInput{
 		TableName:                 &q.table.name,
-		KeyConditions:             q.keyConditions(),
 		ExclusiveStartKey:         q.startKey,
 		ExpressionAttributeNames:  q.nameExpr,
 		ExpressionAttributeValues: q.valueExpr,
+	}
+	if q.index == "" {
+		req.KeyConditions = q.keyConditions()
+	} else {
+		req.IndexName = &q.index
+		req.KeyConditions = q.keyConditionsIndex()
 	}
 	if q.consistent {
 		req.ConsistentRead = &q.consistent
@@ -478,9 +499,6 @@ func (q *Query) queryInput() *dynamodb.QueryInput {
 	if len(q.filters) > 0 {
 		filter := strings.Join(q.filters, " AND ")
 		req.FilterExpression = &filter
-	}
-	if q.index != "" {
-		req.IndexName = &q.index
 	}
 	if q.order != nil {
 		req.ScanIndexForward = (*bool)(q.order)
@@ -503,6 +521,16 @@ func (q *Query) keyConditions() map[string]*dynamodb.Condition {
 			AttributeValueList: q.rangeValues,
 			ComparisonOperator: aws.String(string(q.rangeOp)),
 		}
+	}
+	return conds
+}
+
+func (q *Query) keyConditionsIndex() map[string]*dynamodb.Condition {
+	conds := map[string]*dynamodb.Condition{
+		q.indexKey: &dynamodb.Condition{
+			AttributeValueList: []*dynamodb.AttributeValue{q.indexValue},
+			ComparisonOperator: Equal,
+		},
 	}
 	return conds
 }
